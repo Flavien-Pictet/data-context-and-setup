@@ -1,145 +1,251 @@
-
 import pandas as pd
 import numpy as np
+from olist.utils import haversine_distance
 from olist.data import Olist
-from olist.order import Order
 
 
-class Product:
+class Order:
+    '''
+    DataFrames containing all orders as index,
+    and various properties of these orders as columns
+    '''
     def __init__(self):
-        # Import data only once
-        olist = Olist()
-        self.data = olist.get_data()
-        self.order = Order()
+        # Assign an attribute ".data" to all new instances of Order
+        self.data = Olist().get_data()
 
-    def get_product_features(self):
+    def get_wait_time(self, is_delivered=True):
         """
         Returns a DataFrame with:
-       'product_id', 'product_category_name', 'product_name_length',
-       'product_description_length', 'product_photos_qty', 'product_weight_g',
-       'product_length_cm', 'product_height_cm', 'product_width_cm'
+        [order_id, wait_time, expected_wait_time, delay_vs_expected, order_status]
+        and filters out non-delivered orders unless specified
         """
-        products = self.data['products']
+        # Hint: Within this instance method, you have access to the instance of the class Order in the variable self, as well as all its attributes
+        # $CHALLENGIFY_BEGIN
+        # make sure to create a copy rather than a "view"
+        orders = self.data['orders'].copy()
 
-        # (optional) convert name to English
-        en_category = self.data['product_category_name_translation']
-        df = products.merge(en_category, on='product_category_name')
-        df.drop(['product_category_name'], axis=1, inplace=True)
-        df.rename(columns={
-            'product_category_name_english': 'category',
-            'product_name_lenght': 'product_name_length',
-            'product_description_lenght': 'product_description_length'
-        },
-                  inplace=True)
+        # filter delivered orders
+        if is_delivered:
+            orders = orders.query("order_status=='delivered'").copy()
 
-        return df
+        # handle datetime
+        orders.loc[:, 'order_delivered_customer_date'] = \
+            pd.to_datetime(orders['order_delivered_customer_date'])
+        orders.loc[:, 'order_estimated_delivery_date'] = \
+            pd.to_datetime(orders['order_estimated_delivery_date'])
+        orders.loc[:, 'order_purchase_timestamp'] = \
+            pd.to_datetime(orders['order_purchase_timestamp'])
 
-    def get_price(self):
-        """
-        Return a DataFrame with:
-        'product_id', 'price'
-        """
-        order_items = self.data['order_items']
-        # There are many different order_items per product_id, each with different prices. Take the mean of the various prices
-        return order_items[['product_id',
-                            'price']].groupby('product_id').mean()
+        # compute delay vs expected
+        orders.loc[:, 'delay_vs_expected'] = \
+            (orders['order_delivered_customer_date'] -
+             orders['order_estimated_delivery_date']) / np.timedelta64(24, 'h')
 
-    def get_wait_time(self):
-        """
-        Returns a DataFrame with:
-        'product_id', 'wait_time'
-        """
-        orders_wait_time = self.order.get_wait_time()
-        orders_products = self.data['order_items'][['order_id', 'product_id']].drop_duplicates()
-        orders_products_with_time = orders_products.merge(orders_wait_time, on='order_id')
+        def handle_delay(x):
+            # We only want to keep delay where wait_time is longer than expected (not the other way around)
+            # This is what drives customer dissatisfaction!
+            if x > 0:
+                return x
+            else:
+                return 0
 
-        return orders_products_with_time.groupby('product_id',
-                          as_index=False).agg({'wait_time': 'mean'})
+        orders.loc[:, 'delay_vs_expected'] = \
+            orders['delay_vs_expected'].apply(handle_delay)
+
+        # compute wait time
+        orders.loc[:, 'wait_time'] = \
+            (orders['order_delivered_customer_date'] -
+             orders['order_purchase_timestamp']) / np.timedelta64(24, 'h')
+
+        # compute expected wait time
+        orders.loc[:, 'expected_wait_time'] = \
+            (orders['order_estimated_delivery_date'] -
+             orders['order_purchase_timestamp']) / np.timedelta64(24, 'h')
+
+        return orders[[
+            'order_id', 'wait_time', 'expected_wait_time', 'delay_vs_expected',
+            'order_status'
+        ]]
+        # $CHALLENGIFY_END
 
     def get_review_score(self):
         """
         Returns a DataFrame with:
-        'product_id', 'share_of_five_stars', 'share_of_one_stars',
-        'review_score'
+        order_id, dim_is_five_star, dim_is_one_star, review_score
         """
-        orders_reviews = self.order.get_review_score()
-        orders_products = self.data['order_items'][['order_id',
-                                         'product_id']].drop_duplicates()
-        df = orders_products.merge(orders_reviews, on='order_id')
-        result = df.groupby('product_id', as_index=False).agg({
-            'dim_is_one_star':
-            'mean',
-            'dim_is_five_star':
-            'mean',
-            'review_score':
-            'mean',
-        })
-        result.columns = [
-            'product_id', 'share_of_one_stars', 'share_of_five_stars',
-            'review_score'
+        # $CHALLENGIFY_BEGIN
+        # import data
+        reviews = self.data['order_reviews']
+
+        def dim_five_star(d):
+            if d == 5:
+                return 1
+            else:
+                return 0
+
+        def dim_one_star(d):
+            if d == 1:
+                return 1
+            else:
+                return 0
+
+        reviews.loc[:, 'dim_is_five_star'] =\
+            reviews['review_score'].apply(dim_five_star)
+
+        reviews.loc[:, 'dim_is_one_star'] =\
+            reviews['review_score'].apply(dim_one_star)
+
+        return reviews[[
+            'order_id', 'dim_is_five_star', 'dim_is_one_star', 'review_score'
+        ]]
+        # $CHALLENGIFY_END
+
+    def get_number_products(self):
+        """
+        Returns a DataFrame with:
+        order_id, number_of_products
+        """
+        # $CHALLENGIFY_BEGIN
+        data = self.data
+        products = \
+            data['order_items']\
+            .groupby('order_id',
+                     as_index=False).agg({'order_item_id': 'count'})
+        products.columns = ['order_id', 'number_of_products']
+        return products
+        # $CHALLENGIFY_END
+
+    def get_number_sellers(self):
+        """
+        Returns a DataFrame with:
+        order_id, number_of_sellers
+        """
+        # $CHALLENGIFY_BEGIN
+        data = self.data
+        sellers = \
+            data['order_items']\
+            .groupby('order_id')['seller_id'].nunique().reset_index()
+        sellers.columns = ['order_id', 'number_of_sellers']
+
+        return sellers
+        # $CHALLENGIFY_END
+
+    def get_price_and_freight(self):
+        """
+        Returns a DataFrame with:
+        order_id, price, freight_value
+        """
+        # $CHALLENGIFY_BEGIN
+        data = self.data
+        price_freight = \
+            data['order_items']\
+            .groupby('order_id',
+                     as_index=False).agg({'price': 'sum',
+                                          'freight_value': 'sum'})
+
+        return price_freight
+        # $CHALLENGIFY_END
+
+    # Optional
+    def get_distance_seller_customer(self):
+        """
+        Returns a DataFrame with:
+        order_id, distance_seller_customer
+        """
+        # $CHALLENGIFY_BEGIN
+
+        # import data
+        data = self.data
+        orders = data['orders']
+        order_items = data['order_items']
+        sellers = data['sellers']
+        customers = data['customers']
+
+        # Since one zip code can map to multiple (lat, lng), take the first one
+        geo = data['geolocation']
+        geo = geo.groupby('geolocation_zip_code_prefix',
+                          as_index=False).first()
+
+        # Merge geo_location for sellers
+        sellers_mask_columns = [
+            'seller_id', 'seller_zip_code_prefix', 'geolocation_lat', 'geolocation_lng'
         ]
 
-        return result
+        sellers_geo = sellers.merge(
+            geo,
+            how='left',
+            left_on='seller_zip_code_prefix',
+            right_on='geolocation_zip_code_prefix')[sellers_mask_columns]
 
-    def get_quantity(self):
-        """
-        Returns a DataFrame with:
-        'product_id', 'n_orders', 'quantity'
-        """
-        order_items = self.data['order_items']
+        # Merge geo_location for customers
+        customers_mask_columns = ['customer_id', 'customer_zip_code_prefix', 'geolocation_lat', 'geolocation_lng']
 
-        n_orders =\
-            order_items.groupby('product_id')['order_id'].nunique().reset_index()
-        n_orders.columns = ['product_id', 'n_orders']
+        customers_geo = customers.merge(
+            geo,
+            how='left',
+            left_on='customer_zip_code_prefix',
+            right_on='geolocation_zip_code_prefix')[customers_mask_columns]
 
-        quantity = \
-            order_items.groupby('product_id',
-                                   as_index=False).agg({'order_id': 'count'})
-        quantity.columns = ['product_id', 'quantity']
+        # Match customers with sellers in one table
+        customers_sellers = customers.merge(orders, on='customer_id')\
+            .merge(order_items, on='order_id')\
+            .merge(sellers, on='seller_id')\
+            [['order_id', 'customer_id','customer_zip_code_prefix', 'seller_id', 'seller_zip_code_prefix']]
+        
+        # Add the geoloc
+        matching_geo = customers_sellers.merge(sellers_geo,
+                                            on='seller_id')\
+            .merge(customers_geo,
+                   on='customer_id',
+                   suffixes=('_seller',
+                             '_customer'))
+        # Remove na()
+        matching_geo = matching_geo.dropna()
 
-        return n_orders.merge(quantity, on='product_id')
+        matching_geo.loc[:, 'distance_seller_customer'] =\
+            matching_geo.apply(lambda row:
+                               haversine_distance(row['geolocation_lng_seller'],
+                                                  row['geolocation_lat_seller'],
+                                                  row['geolocation_lng_customer'],
+                                                  row['geolocation_lat_customer']),
+                               axis=1)
+        # Since an order can have multiple sellers,
+        # return the average of the distance per order
+        order_distance =\
+            matching_geo.groupby('order_id',
+                                 as_index=False).agg({'distance_seller_customer':
+                                                      'mean'})
 
-    def get_sales(self):
-        """
-        Returns a DataFrame with:
-        'product_id', 'sales'
-        """
-        return self.data['order_items'][['product_id', 'price']]\
-            .groupby('product_id')\
-            .sum()\
-            .rename(columns={'price': 'sales'})
+        return order_distance
+        # $CHALLENGIFY_END
 
-    def get_training_data(self):
+    def get_training_data(self,
+                          is_delivered=True,
+                          with_distance_seller_customer=False):
         """
-        Returns a DataFrame with:
-        ['product_id', 'product_name_length', 'product_description_length',
-       'product_photos_qty', 'product_weight_g', 'product_length_cm',
-       'product_height_cm', 'product_width_cm', 'category', 'wait_time',
-       'price', 'share_of_one_stars', 'share_of_five_stars', 'review_score',
-       'n_orders', 'quantity', 'sales'],
+        Returns a clean DataFrame (without NaN), with the all following columns:
+        ['order_id', 'wait_time', 'expected_wait_time', 'delay_vs_expected',
+        'order_status', 'dim_is_five_star', 'dim_is_one_star', 'review_score',
+        'number_of_products', 'number_of_sellers', 'price', 'freight_value',
+        'distance_seller_customer']
         """
+        # Hint: make sure to re-use your instance methods defined above
+        # $CHALLENGIFY_BEGIN
         training_set =\
-            self.get_product_features()\
+            self.get_wait_time(is_delivered)\
                 .merge(
-                self.get_wait_time(), on='product_id'
-               ).merge(
-                self.get_price(), on='product_id'
-               ).merge(
-                self.get_review_score(), on='product_id'
-               ).merge(
-                self.get_quantity(), on='product_id'
-               ).merge(
-                self.get_sales(), on='product_id'
-               )
+                self.get_review_score(), on='order_id'
+            ).merge(
+                self.get_number_products(), on='order_id'
+            ).merge(
+                self.get_number_sellers(), on='order_id'
+            ).merge(
+                self.get_price_and_freight(), on='order_id'
+            )
+        # Skip heavy computation of distance_seller_customer unless specified
+        if with_distance_seller_customer:
+            training_set = training_set.merge(
+                self.get_distance_seller_customer(), on='order_id')
 
-        return training_set
-
-    def get_product_cat(self, agg="mean"):
-        '''
-        Returns a DataFrame with `category` as index, and aggregating various properties for each category in columns such as:
-        - `quantity`: total number of products sold for this category.
-        - `product_weight_g`: mean or median weight per category
-        - ...
-        '''
-        pass  # YOUR CODE HERE
-
+        return training_set.dropna()
+        # $CHALLENGIFY_END
