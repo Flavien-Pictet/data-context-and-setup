@@ -191,7 +191,7 @@ class Order:
             .merge(order_items, on='order_id')\
             .merge(sellers, on='seller_id')\
             [['order_id', 'customer_id','customer_zip_code_prefix', 'seller_id', 'seller_zip_code_prefix']]
-        
+
         # Add the geoloc
         matching_geo = customers_sellers.merge(sellers_geo,
                                             on='seller_id')\
